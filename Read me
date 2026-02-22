@@ -1,0 +1,14 @@
+
+Key Levelz (CSV/URL Levels)
+`KeyLevelz` can draw chart levels from either:
+	•	`CSV File Path` (local file, example: `C:\NinjaTrader\KeyLevels.csv`)
+	•	`CSV URL (optional)` (web-hosted CSV, example: `https://example.com/keylevels.csv`)
+
+Where to set it in NinjaTrader:
+	1.	Open your chart.
+	2.	Right-click → Indicators.
+	3.	Select `Key Levelz`.
+	4.	In **Parameters**, set either `CSV File Path` or `CSV URL (optional)`.
+	5.	Click OK.
+
+If both are set, `CSV URL (optional)` is used first.

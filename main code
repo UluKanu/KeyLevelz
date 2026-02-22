@@ -1,0 +1,231 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Windows.Media;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+    public class KeyLevelz : Indicator
+    {
+        [NinjaScriptProperty]
+        [Display(Name = "CSV File Path", Order = 0, GroupName = "Parameters")]
+        public string CsvFilePath { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "CSV URL (optional)", Order = 1, GroupName = "Parameters")]
+        public string CsvUrl { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Has Header", Order = 2, GroupName = "Parameters")]
+        public bool HasHeader { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Delimiter", Order = 3, GroupName = "Parameters")]
+        public string Delimiter { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 3600)]
+        [Display(Name = "Reload Interval (sec)", Order = 4, GroupName = "Parameters")]
+        public int ReloadIntervalSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "Line Width", Order = 5, GroupName = "Parameters")]
+        public int LineWidth { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Status Box", Order = 6, GroupName = "Parameters")]
+        public bool ShowStatusBox { get; set; }
+
+        private readonly List<string> activeTags = new List<string>();
+        private DateTime lastLoadUtc;
+        private string lastStatus = string.Empty;
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Name = "Key Levelz";
+                IsOverlay = true;
+                Calculate = Calculate.OnEachTick;
+
+                CsvFilePath = @"C:\NinjaTrader\KeyLevels.csv";
+                CsvUrl = string.Empty;
+                HasHeader = true;
+                Delimiter = ",";
+                ReloadIntervalSeconds = 5;
+                LineWidth = 2;
+                ShowStatusBox = true;
+            }
+            else if (State == State.DataLoaded)
+            {
+                lastLoadUtc = DateTime.MinValue;
+                lastStatus = string.Empty;
+            }
+        }
+
+        protected override void OnBarUpdate()
+        {
+            if (CurrentBar < 0)
+                return;
+
+            if ((DateTime.UtcNow - lastLoadUtc).TotalSeconds < ReloadIntervalSeconds)
+                return;
+
+            lastLoadUtc = DateTime.UtcNow;
+            LoadLevelsFromCsv();
+        }
+
+        private void LoadLevelsFromCsv()
+        {
+            string[] lines = GetCsvLines();
+            if (lines == null)
+                return;
+
+            int startIndex = HasHeader ? 1 : 0;
+            int levelIndex = 0;
+            List<string> newTags = new List<string>();
+
+            for (int i = startIndex; i < lines.Length; i++)
+            {
+                string raw = lines[i];
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+
+                if (!TryParseLevel(raw, levelIndex, out string levelName, out double levelPrice))
+                    continue;
+
+                string tag = "KeyLevelz_" + MakeSafeTag(levelName) + "_" + levelIndex;
+                HorizontalLine line = Draw.HorizontalLine(this, tag, levelPrice, Brushes.DodgerBlue);
+                line.Stroke.Width = LineWidth;
+                line.IsLocked = true;
+                newTags.Add(tag);
+                levelIndex++;
+            }
+
+            for (int i = 0; i < activeTags.Count; i++)
+            {
+                if (!newTags.Contains(activeTags[i]))
+                    RemoveDrawObject(activeTags[i]);
+            }
+
+            activeTags.Clear();
+            activeTags.AddRange(newTags);
+            UpdateStatus(string.Format("Loaded {0} levels from {1} at {2:HH:mm:ss}", activeTags.Count, GetCsvSourceLabel(), DateTime.Now));
+        }
+
+        private string[] GetCsvLines()
+        {
+            if (!string.IsNullOrWhiteSpace(CsvUrl))
+            {
+                try
+                {
+                    using (WebClient webClient = new WebClient())
+                    {
+                        string content = webClient.DownloadString(CsvUrl);
+                        return content.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UpdateStatus("CSV URL load failed: " + ex.Message);
+                    return null;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(CsvFilePath))
+            {
+                UpdateStatus("Set CSV File Path or CSV URL in indicator parameters.");
+                return null;
+            }
+
+            if (!File.Exists(CsvFilePath))
+            {
+                UpdateStatus("CSV file not found: " + CsvFilePath);
+                return null;
+            }
+
+            return File.ReadAllLines(CsvFilePath);
+        }
+
+        private string GetCsvSourceLabel()
+        {
+            if (!string.IsNullOrWhiteSpace(CsvUrl))
+                return CsvUrl;
+
+            return CsvFilePath;
+        }
+
+        private bool TryParseLevel(string rawLine, int fallbackIndex, out string levelName, out double levelPrice)
+        {
+            levelName = "Level" + (fallbackIndex + 1);
+            levelPrice = 0;
+
+            string[] parts = rawLine.Split(new string[] { Delimiter }, StringSplitOptions.None);
+            if (parts.Length == 0)
+                return false;
+
+            if (parts.Length == 1)
+                return TryParsePrice(parts[0], out levelPrice);
+
+            string first = parts[0].Trim();
+            string second = parts[1].Trim();
+
+            if (TryParsePrice(first, out levelPrice))
+            {
+                if (!string.IsNullOrWhiteSpace(second))
+                    levelName = second;
+                return true;
+            }
+
+            if (TryParsePrice(second, out levelPrice))
+            {
+                if (!string.IsNullOrWhiteSpace(first))
+                    levelName = first;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryParsePrice(string value, out double price)
+        {
+            return double.TryParse(value.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out price)
+                || double.TryParse(value.Trim(), NumberStyles.Any, CultureInfo.CurrentCulture, out price);
+        }
+
+        private string MakeSafeTag(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "Level";
+
+            return Regex.Replace(value, "[^A-Za-z0-9_]", "_");
+        }
+
+        private void UpdateStatus(string status)
+        {
+            if (status == lastStatus)
+                return;
+
+            lastStatus = status;
+
+            if (!ShowStatusBox)
+                return;
+
+            StringBuilder message = new StringBuilder();
+            message.AppendLine("Key Levelz");
+            message.AppendLine(Instrument != null ? Instrument.FullName : "");
+            message.AppendLine(status);
+            Draw.TextFixed(this, "KeyLevelz_Status", message.ToString(), TextPosition.TopRight);
+        }
+    }
+}
